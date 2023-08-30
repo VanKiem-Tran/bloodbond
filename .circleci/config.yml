@@ -1,0 +1,80 @@
+version: 2.1
+aliases:
+    - &restore-cache
+      restore_cache:
+          keys:
+              - v1-dependencies-
+              # fallback to using the latest cache if no exact match is found
+              - v1-dependencies-
+    - &install-deps
+      run:
+          name: Install dependencies
+          command: npm i --fronzen-lockfile
+
+orbs:
+    node: circleci/node@5.0.1
+    docker: circleci/docker@2.2.0
+
+jobs:
+    build:
+        environment:
+            DOCKER_IMAGE: high10hunter/node
+            DOCKER_TAG: latest
+        docker:
+            - image: cimg/node:16.20
+            - image: docker:19.03.14
+        working_directory: ~/bloodbond/backend
+        steps:
+            - checkout:
+                  path: ~/bloodbond
+            - setup_remote_docker
+            - *restore-cache
+            - run: npm cache clear --force
+            - run:
+                  name: Update NPM version
+                  command: 'sudo npm install -g npm@latest'
+            - *install-deps
+            - save_cache:
+                  key: v1-dependencies-{{ checksum "package.json" }}
+                  paths:
+                      - ./node_modules
+            # login to docker hub
+            - docker/check:
+                  docker-username: DOCKER_USERNAME
+                  docker-password: DOCKER_PASSWORD
+            # build docker image
+            - docker/build:
+                  image: $DOCKER_IMAGE
+                  tag: $DOCKER_TAG
+            # push docker image
+            - docker/push:
+                  digest-path: /tmp/digest.txt
+                  image: $DOCKER_IMAGE
+                  tag: $DOCKER_TAG
+    deploy:
+        executor: docker/docker
+        working_directory: ~/bloodbond/backend
+        steps:
+            - add_ssh_keys:
+                  fingerprints: '09:03:4f:fb:dd:07:f0:0a:85:79:1f:48:ab:66:96:62'
+            - run:
+                  name: Deploy via ssh
+                  command: |
+                      echo Starting deploy to server
+                      ssh -oStrictHostKeyChecking=no -v $SSH_USER@$SSH_HOST 'cd ~/bloodbond/backend && git checkout develop && git fetch origin && git reset --hard origin/develop && chmod 777 ./script/deploy.sh && ./script/deploy.sh'
+
+workflows:
+    build-and-deploy:
+        jobs:
+            - build:
+                  filters:
+                      branches:
+                          only:
+                              - develop
+            - deploy:
+                  requires:
+                      - build
+                  filters:
+                      branches:
+                          only:
+                              - develop
